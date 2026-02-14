@@ -1,0 +1,32 @@
+# Local env / secrets
+.env
+.env.*
+
+# Ralphie runtime artifacts
+.ralphie/
+logs/
+consensus/
+completion_log/
+*.log
+HUMAN_INSTRUCTIONS.md
+research/HUMAN_FEEDBACK.md
+
+# Test coverage outputs
+coverage/
+.nyc_output/
+htmlcov/
+.cache/
+.cargo/
+
+# Build outputs (stack-agnostic)
+/bin/
+/dist/
+/target/
+*.exe
+*.out
+*.test
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

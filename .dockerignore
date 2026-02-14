@@ -1,0 +1,13 @@
+target/
+.ralphie/
+logs/
+consensus/
+completion_log/
+.specify/
+maps/
+.vscode/
+.idea/
+.DS_Store
+.env
+.env.*
+
