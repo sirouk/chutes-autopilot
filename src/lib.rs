@@ -222,6 +222,10 @@ impl AppState {
             return;
         }
 
+        if runtime.sticky_models.len() <= max_entries {
+            return;
+        }
+
         while runtime.sticky_models.len() > max_entries {
             let oldest_key = runtime
                 .sticky_models
@@ -625,7 +629,19 @@ async fn proxy_chat_completions_with_failover(
         .snapshot_at
         .map(|instant| instant.elapsed().as_millis() as u64);
 
+    // Only rotate sticky selection when we have a client key. Centralizing this avoids repeating
+    // the same `if let Some(key)` guard all over the retry paths.
+    let rotate_sticky = |failed_model: String| async move {
+        if let Some(key) = client_key {
+            state
+                .rotate_sticky_model(key, candidates, failed_model.as_str())
+                .await;
+        }
+    };
+
     for (idx, model_name) in candidates.iter().enumerate() {
+        let has_next = idx + 1 < candidates.len();
+
         let Some(map) = body_json.as_object_mut() else {
             return openai_error_response(
                 StatusCode::BAD_REQUEST,
@@ -659,11 +675,9 @@ async fn proxy_chat_completions_with_failover(
         let upstream =
             match tokio::time::timeout(state.config.upstream_header_timeout, req.send()).await {
                 Err(_) => {
-                    if let Some(key) = client_key {
-                        state.rotate_sticky_model(key, candidates, model_name).await;
-                    }
+                    rotate_sticky(model_name.clone()).await;
 
-                    if idx + 1 < candidates.len() {
+                    if has_next {
                         tracing::warn!(
                             failed_model = %model_name,
                             attempt_idx = idx,
@@ -684,11 +698,9 @@ async fn proxy_chat_completions_with_failover(
                     );
                 }
                 Ok(Err(_)) => {
-                    if let Some(key) = client_key {
-                        state.rotate_sticky_model(key, candidates, model_name).await;
-                    }
+                    rotate_sticky(model_name.clone()).await;
 
-                    if idx + 1 < candidates.len() {
+                    if has_next {
                         tracing::warn!(
                             failed_model = %model_name,
                             attempt_idx = idx,
@@ -715,10 +727,8 @@ async fn proxy_chat_completions_with_failover(
         let upstream_resp_headers = upstream.headers().clone();
 
         // Retryable upstream status before committing bytes.
-        if status == StatusCode::SERVICE_UNAVAILABLE && idx + 1 < candidates.len() {
-            if let Some(key) = client_key {
-                state.rotate_sticky_model(key, candidates, model_name).await;
-            }
+        if status == StatusCode::SERVICE_UNAVAILABLE && has_next {
+            rotate_sticky(model_name.clone()).await;
             tracing::warn!(
                 failed_model = %model_name,
                 attempt_idx = idx,
@@ -732,7 +742,7 @@ async fn proxy_chat_completions_with_failover(
 
         // For successful responses where we could fail over, delay commitment until we see the
         // first body chunk (or abandon due to timeout).
-        if status.is_success() && idx + 1 < candidates.len() {
+        if status.is_success() && has_next {
             let mut body_stream = upstream.bytes_stream();
             match tokio::time::timeout(
                 state.config.upstream_first_body_byte_timeout,
@@ -741,9 +751,7 @@ async fn proxy_chat_completions_with_failover(
             .await
             {
                 Err(_) | Ok(None) => {
-                    if let Some(key) = client_key {
-                        state.rotate_sticky_model(key, candidates, model_name).await;
-                    }
+                    rotate_sticky(model_name.clone()).await;
                     tracing::warn!(
                         failed_model = %model_name,
                         attempt_idx = idx,
@@ -755,9 +763,7 @@ async fn proxy_chat_completions_with_failover(
                     continue;
                 }
                 Ok(Some(Err(_))) => {
-                    if let Some(key) = client_key {
-                        state.rotate_sticky_model(key, candidates, model_name).await;
-                    }
+                    rotate_sticky(model_name.clone()).await;
                     tracing::warn!(
                         failed_model = %model_name,
                         attempt_idx = idx,
@@ -1187,12 +1193,13 @@ mod tests {
     }
 
     fn test_config(backend_base_url: String) -> AppConfig {
-        let mut cfg = AppConfig::default();
-        cfg.backend_base_url = backend_base_url;
-        cfg.upstream_connect_timeout = Duration::from_millis(200);
-        cfg.upstream_header_timeout = Duration::from_millis(200);
-        cfg.upstream_first_body_byte_timeout = Duration::from_millis(50);
-        cfg
+        AppConfig {
+            backend_base_url,
+            upstream_connect_timeout: Duration::from_millis(200),
+            upstream_header_timeout: Duration::from_millis(200),
+            upstream_first_body_byte_timeout: Duration::from_millis(50),
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -1243,9 +1250,11 @@ mod tests {
 
     #[test]
     fn derive_sticky_key_does_not_use_xff_when_peer_is_not_trusted() {
-        let mut cfg = AppConfig::default();
-        cfg.trust_proxy_headers = true;
-        cfg.trusted_proxy_cidrs = vec!["192.0.2.0/24".parse::<IpNet>().unwrap()];
+        let cfg = AppConfig {
+            trust_proxy_headers: true,
+            trusted_proxy_cidrs: vec!["192.0.2.0/24".parse::<IpNet>().unwrap()],
+            ..Default::default()
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert("x-forwarded-for", HeaderValue::from_static("198.51.100.7"));
@@ -1259,9 +1268,11 @@ mod tests {
 
     #[test]
     fn derive_sticky_key_uses_xff_when_peer_is_trusted() {
-        let mut cfg = AppConfig::default();
-        cfg.trust_proxy_headers = true;
-        cfg.trusted_proxy_cidrs = vec!["203.0.113.0/24".parse::<IpNet>().unwrap()];
+        let cfg = AppConfig {
+            trust_proxy_headers: true,
+            trusted_proxy_cidrs: vec!["203.0.113.0/24".parse::<IpNet>().unwrap()],
+            ..Default::default()
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -1694,8 +1705,10 @@ mod tests {
 
     #[tokio::test]
     async fn sticky_map_evicts_oldest_entries_when_over_cap() {
-        let mut cfg = AppConfig::default();
-        cfg.sticky_max_entries = 2;
+        let cfg = AppConfig {
+            sticky_max_entries: 2,
+            ..Default::default()
+        };
 
         let state = AppState::new(cfg);
         let now = Instant::now();
@@ -1869,8 +1882,10 @@ mod tests {
 
     #[tokio::test]
     async fn readyz_returns_503_when_snapshot_is_stale() {
-        let mut cfg = AppConfig::default();
-        cfg.readyz_max_snapshot_age = Duration::from_millis(1);
+        let cfg = AppConfig {
+            readyz_max_snapshot_age: Duration::from_millis(1),
+            ..Default::default()
+        };
 
         let state = AppState::new(cfg);
         {
@@ -2570,9 +2585,11 @@ mod tests {
 
     #[test]
     fn derive_sticky_key_parses_xff_socketaddr_when_peer_is_trusted() {
-        let mut cfg = AppConfig::default();
-        cfg.trust_proxy_headers = true;
-        cfg.trusted_proxy_cidrs = vec!["203.0.113.0/24".parse::<IpNet>().unwrap()];
+        let cfg = AppConfig {
+            trust_proxy_headers: true,
+            trusted_proxy_cidrs: vec!["203.0.113.0/24".parse::<IpNet>().unwrap()],
+            ..Default::default()
+        };
 
         let mut headers = HeaderMap::new();
         headers.insert(
@@ -2589,8 +2606,10 @@ mod tests {
 
     #[tokio::test]
     async fn chat_completions_rejects_body_over_max_request_bytes_with_openai_shape() {
-        let mut cfg = AppConfig::default();
-        cfg.max_request_bytes = 32;
+        let cfg = AppConfig {
+            max_request_bytes: 32,
+            ..Default::default()
+        };
 
         let state = AppState::new(cfg);
         let app = app(state);

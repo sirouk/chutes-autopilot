@@ -96,3 +96,7 @@ Out of scope (future):
 ## Notes on Current State
 
 - The implementation now uses the OpenAI-style model catalog (`GET /v1/models`) as the authoritative allowlist and allows both TEE and non-TEE models (with a conservative `-TEE` suffix fallback for utilization ranking when the catalog is unavailable).
+
+## Latest Verification
+
+- 2026-02-14: `make test` (41 tests) and `make lint` (fmt + clippy `-D warnings`) passed.
