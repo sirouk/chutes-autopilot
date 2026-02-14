@@ -1,0 +1,80 @@
+[
+  {
+    "name": "[private chute]",
+    "active_instance_count": 100,
+    "utilization_current": 0.0,
+    "utilization_5m": 0.0,
+    "utilization_15m": 0.0,
+    "utilization_1h": 0.0,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  },
+  {
+    "name": "not-tee-model",
+    "active_instance_count": 10,
+    "utilization_current": 0.0,
+    "utilization_5m": 0.0,
+    "utilization_15m": 0.0,
+    "utilization_1h": 0.0,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  },
+  {
+    "name": "zero-instance-TEE",
+    "active_instance_count": 0,
+    "utilization_current": 0.0,
+    "utilization_5m": 0.0,
+    "utilization_15m": 0.0,
+    "utilization_1h": 0.0,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  },
+  {
+    "name": "alpha-TEE",
+    "active_instance_count": 10,
+    "utilization_current": 0.0,
+    "utilization_5m": 0.0,
+    "utilization_15m": 0.0,
+    "utilization_1h": 0.0,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  },
+  {
+    "name": "beta-TEE",
+    "active_instance_count": 5,
+    "utilization_current": 0.5,
+    "utilization_5m": 0.5,
+    "utilization_15m": 0.5,
+    "utilization_1h": 0.5,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  },
+  {
+    "name": "gamma-TEE",
+    "active_instance_count": 20,
+    "utilization_current": 0.96875,
+    "utilization_5m": 0.96875,
+    "utilization_15m": 0.96875,
+    "utilization_1h": 0.96875,
+    "rate_limit_ratio_5m": 0.0,
+    "rate_limit_ratio_15m": 0.0,
+    "rate_limit_ratio_1h": 0.0,
+    "scalable": false,
+    "scale_allowance": 0.0
+  }
+]
