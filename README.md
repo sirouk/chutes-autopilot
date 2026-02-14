@@ -137,6 +137,7 @@ Environment variables:
 - `MODELS_REFRESH_MS` (default: `300000`)
 - `UTILIZATION_URL` (default: `https://api.chutes.ai/chutes/utilization`)
 - `UTILIZATION_REFRESH_MS` (default: `5000`)
+- `CONTROL_PLANE_TIMEOUT_MS` (default: `10000`)
 - `READYZ_MAX_SNAPSHOT_AGE_MS` (default: `20000`)
 - `RUST_LOG` (default: `info`)
 - `STICKY_TTL_SECS` (default: `1800`)

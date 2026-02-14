@@ -83,6 +83,9 @@ fn config_from_env() -> anyhow::Result<chutes_autopilot::AppConfig> {
     if let Some(ms) = env_u64("UTILIZATION_REFRESH_MS") {
         cfg.utilization_refresh_ms = Duration::from_millis(ms);
     }
+    if let Some(ms) = env_u64("CONTROL_PLANE_TIMEOUT_MS") {
+        cfg.control_plane_timeout = Duration::from_millis(ms);
+    }
     if let Some(ms) = env_u64("UPSTREAM_CONNECT_TIMEOUT_MS") {
         cfg.upstream_connect_timeout = Duration::from_millis(ms);
     }

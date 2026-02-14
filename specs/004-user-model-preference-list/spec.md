@@ -74,4 +74,4 @@ deepseek-ai/DeepSeek-V3.2-TEE,deepseek-ai/DeepSeek-V3-0324-TEE
 4. **Selection header**
    - On success, `x-chutes-autopilot-selected` equals the model that produced the response.
 
-## Status: DRAFT
+## Status: COMPLETE

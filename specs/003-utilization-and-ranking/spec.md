@@ -63,4 +63,4 @@ Important: the utilization feed includes public chutes that are not chat-capable
 6. Model allowlist refresh failure:
    - If a model allowlist refresh attempt fails, the last-known-good allowlist remains active.
 
-## Status: DRAFT
+## Status: COMPLETE

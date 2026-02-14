@@ -37,6 +37,7 @@ pub struct AppConfig {
     pub models_refresh_ms: Duration,
     pub utilization_url: String,
     pub utilization_refresh_ms: Duration,
+    pub control_plane_timeout: Duration,
     pub upstream_connect_timeout: Duration,
     pub upstream_header_timeout: Duration,
     pub upstream_first_body_byte_timeout: Duration,
@@ -57,6 +58,7 @@ impl Default for AppConfig {
             models_refresh_ms: Duration::from_millis(300_000),
             utilization_url: "https://api.chutes.ai/chutes/utilization".to_string(),
             utilization_refresh_ms: Duration::from_millis(5_000),
+            control_plane_timeout: Duration::from_millis(10_000),
             upstream_connect_timeout: Duration::from_millis(2_000),
             upstream_header_timeout: Duration::from_millis(10_000),
             upstream_first_body_byte_timeout: Duration::from_millis(120_000),
@@ -93,6 +95,12 @@ impl AppState {
     pub fn new(config: AppConfig) -> Self {
         let http_client = Client::builder()
             .connect_timeout(config.upstream_connect_timeout)
+            // Autopilot is a proxy: do not allow transparent decompression to alter the byte stream
+            // while we forward upstream response headers (e.g., Content-Encoding/Length).
+            .no_gzip()
+            .no_brotli()
+            .no_deflate()
+            .no_zstd()
             .build()
             .expect("failed to build reqwest client");
         Self {
@@ -511,8 +519,18 @@ fn filter_upstream_request_headers(headers: &HeaderMap) -> HeaderMap {
         if name == header::HOST || name == header::CONTENT_LENGTH {
             continue;
         }
+        if name == header::ACCEPT_ENCODING {
+            // We'll set this explicitly after the loop.
+            continue;
+        }
         out.append(name, value.clone());
     }
+    // Ensure the upstream response body is the exact byte stream we relay, avoiding issues around
+    // automatic decompression or header mismatches.
+    out.insert(
+        header::ACCEPT_ENCODING,
+        HeaderValue::from_static("identity"),
+    );
     out
 }
 
@@ -581,7 +599,7 @@ async fn maybe_set_sticky_model(
     let Some(key) = client_key else {
         return;
     };
-    if status == StatusCode::TOO_MANY_REQUESTS || status == StatusCode::SERVICE_UNAVAILABLE {
+    if !status.is_success() {
         return;
     }
 
@@ -885,7 +903,13 @@ fn is_model_catalog_eligible(model: &str, models_allowlist: &HashSet<String>) ->
 async fn refresh_models_allowlist(state: AppState) {
     let client = state.http_client.clone();
     loop {
-        if let Ok(allowlist) = fetch_models_allowlist(&client, &state.config.models_url).await {
+        if let Ok(allowlist) = fetch_models_allowlist(
+            &client,
+            &state.config.models_url,
+            state.config.control_plane_timeout,
+        )
+        .await
+        {
             let mut runtime = state.runtime.write().await;
             runtime.models_allowlist = allowlist;
             runtime.models_allowlist_at = Some(Instant::now());
@@ -900,17 +924,30 @@ async fn refresh_candidates(state: AppState) {
     loop {
         let models_allowlist = state.runtime.read().await.models_allowlist.clone();
 
-        let candidates =
-            fetch_ranked_candidates(&client, &state.config.utilization_url, &models_allowlist)
-                .await;
+        let candidates = fetch_ranked_candidates(
+            &client,
+            &state.config.utilization_url,
+            &models_allowlist,
+            state.config.control_plane_timeout,
+        )
+        .await;
         state.update_candidate_snapshot(candidates).await;
 
         tokio::time::sleep(state.config.utilization_refresh_ms).await;
     }
 }
 
-async fn fetch_models_allowlist(client: &Client, url: &str) -> anyhow::Result<HashSet<String>> {
-    let response = client.get(url).send().await?.error_for_status()?;
+async fn fetch_models_allowlist(
+    client: &Client,
+    url: &str,
+    timeout: Duration,
+) -> anyhow::Result<HashSet<String>> {
+    let response = client
+        .get(url)
+        .timeout(timeout)
+        .send()
+        .await?
+        .error_for_status()?;
     let payload = response.json::<OpenAiModelListResponse>().await?;
     Ok(payload.data.into_iter().map(|m| m.id).collect())
 }
@@ -919,9 +956,11 @@ async fn fetch_ranked_candidates(
     client: &Client,
     url: &str,
     models_allowlist: &HashSet<String>,
+    timeout: Duration,
 ) -> anyhow::Result<Vec<RankedCandidate>> {
     let utilizations: Vec<UtilizationRecord> = client
         .get(url)
+        .timeout(timeout)
         .send()
         .await?
         .error_for_status()?
@@ -1965,6 +2004,111 @@ mod tests {
         combined.extend_from_slice(first.as_ref());
         combined.extend_from_slice(&rest);
         assert_eq!(combined, b"firstsecond");
+
+        autopilot_handle.abort();
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn chat_completions_does_not_set_sticky_model_on_upstream_error() {
+        let attempts: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let upstream_attempts = attempts.clone();
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(v): Json<Value>| {
+                let upstream_attempts = upstream_attempts.clone();
+                async move {
+                    let model = v
+                        .get("model")
+                        .and_then(Value::as_str)
+                        .unwrap_or_default()
+                        .to_string();
+                    upstream_attempts.lock().unwrap().push(model);
+                    (StatusCode::INTERNAL_SERVER_ERROR, "nope")
+                }
+            }),
+        );
+        let (base_url, upstream_handle) = spawn_upstream(upstream).await;
+
+        let state = AppState::new(test_config(base_url));
+        let app = app(state.clone());
+
+        let auth_headers = HeaderMap::from_iter([(
+            axum::http::header::AUTHORIZATION,
+            HeaderValue::from_static("Bearer sticky-api-token"),
+        )]);
+        let client_key = derive_sticky_key(&state.config, &auth_headers, &None).unwrap();
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .header("authorization", "Bearer sticky-api-token")
+                    .body(Body::from(r#"{"model":"direct-nontee"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert!(state.sticky_model(&client_key).await.is_none());
+
+        let _ = resp.into_body().collect().await.unwrap();
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn chat_completions_preserves_compressed_upstream_bytes_and_headers() {
+        use flate2::write::GzEncoder;
+        use flate2::Compression;
+        use std::io::Write;
+
+        let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(b"hello").unwrap();
+        let gz = encoder.finish().unwrap();
+
+        let upstream_gz = gz.clone();
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(move |Json(_): Json<Value>| {
+                let upstream_gz = upstream_gz.clone();
+                async move {
+                    let mut resp = Response::new(Body::from(upstream_gz));
+                    *resp.status_mut() = StatusCode::OK;
+                    resp.headers_mut().insert(
+                        axum::http::header::CONTENT_ENCODING,
+                        HeaderValue::from_static("gzip"),
+                    );
+                    resp
+                }
+            }),
+        );
+        let (upstream_url, upstream_handle) = spawn_upstream(upstream).await;
+
+        let state = AppState::new(test_config(upstream_url));
+        let router = app(state);
+        let (autopilot_url, autopilot_handle) = spawn_upstream(router).await;
+
+        let resp = reqwest::Client::new()
+            .post(format!("{autopilot_url}/v1/chat/completions"))
+            .header("content-type", "application/json")
+            .body(r#"{"model":"direct-nontee"}"#)
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()
+                .get(axum::http::header::CONTENT_ENCODING.as_str())
+                .map(|v| v.to_str().unwrap()),
+            Some("gzip")
+        );
+
+        let body = resp.bytes().await.unwrap();
+        assert_eq!(body.as_ref(), gz.as_slice());
 
         autopilot_handle.abort();
         upstream_handle.abort();

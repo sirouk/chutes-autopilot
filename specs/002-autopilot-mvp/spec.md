@@ -69,4 +69,4 @@ Rules:
 8. **Error shape**
    - When Autopilot rejects a request before proxying upstream, it returns a JSON body matching the OpenAI `ErrorResponse` schema.
 
-## Status: DRAFT
+## Status: COMPLETE

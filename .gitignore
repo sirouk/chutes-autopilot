@@ -1,6 +1,7 @@
 # Local env / secrets
 .env
 .env.*
+!.env.example
 
 # Ralphie runtime artifacts
 .ralphie/
