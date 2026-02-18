@@ -740,9 +740,10 @@ async fn proxy_chat_completions_with_failover(
             continue;
         }
 
-        // For successful responses where we could fail over, delay commitment until we see the
-        // first body chunk (or abandon due to timeout).
-        if status.is_success() && has_next {
+        // For successful responses, delay commitment until we see the first body chunk.
+        // This keeps first-byte timeout enforcement consistent for both retry and single-candidate
+        // paths so requests do not hang indefinitely before any bytes are sent.
+        if status.is_success() {
             let mut body_stream = upstream.bytes_stream();
             match tokio::time::timeout(
                 state.config.upstream_first_body_byte_timeout,
@@ -752,27 +753,47 @@ async fn proxy_chat_completions_with_failover(
             {
                 Err(_) | Ok(None) => {
                     rotate_sticky(model_name.clone()).await;
-                    tracing::warn!(
-                        failed_model = %model_name,
-                        attempt_idx = idx,
-                        candidates_total = candidates.len(),
-                        snapshot_age_ms = ?snapshot_age_ms,
-                        reason = "upstream_first_body_byte_timeout",
-                        "retryable upstream failure; attempting failover"
+                    if has_next {
+                        tracing::warn!(
+                            failed_model = %model_name,
+                            attempt_idx = idx,
+                            candidates_total = candidates.len(),
+                            snapshot_age_ms = ?snapshot_age_ms,
+                            reason = "upstream_first_body_byte_timeout",
+                            "retryable upstream failure; attempting failover"
+                        );
+                        continue;
+                    }
+
+                    return openai_error_response(
+                        StatusCode::GATEWAY_TIMEOUT,
+                        "server_error",
+                        "upstream timeout waiting for first response byte",
+                        None,
+                        Some("upstream_first_body_byte_timeout"),
                     );
-                    continue;
                 }
                 Ok(Some(Err(_))) => {
                     rotate_sticky(model_name.clone()).await;
-                    tracing::warn!(
-                        failed_model = %model_name,
-                        attempt_idx = idx,
-                        candidates_total = candidates.len(),
-                        snapshot_age_ms = ?snapshot_age_ms,
-                        reason = "upstream_first_body_byte_error",
-                        "retryable upstream failure; attempting failover"
+                    if has_next {
+                        tracing::warn!(
+                            failed_model = %model_name,
+                            attempt_idx = idx,
+                            candidates_total = candidates.len(),
+                            snapshot_age_ms = ?snapshot_age_ms,
+                            reason = "upstream_first_body_byte_error",
+                            "retryable upstream failure; attempting failover"
+                        );
+                        continue;
+                    }
+
+                    return openai_error_response(
+                        StatusCode::BAD_GATEWAY,
+                        "server_error",
+                        "upstream response body error before first byte",
+                        None,
+                        Some("upstream_first_body_byte_error"),
                     );
-                    continue;
                 }
                 Ok(Some(Ok(first_chunk))) => {
                     maybe_set_sticky_model(state, client_key, status, model_name).await;
@@ -2420,6 +2441,50 @@ mod tests {
 
         let body = resp.into_body().collect().await.unwrap().to_bytes();
         assert_eq!(body, Bytes::from_static(b"ok"));
+
+        upstream_handle.abort();
+    }
+
+    #[tokio::test]
+    async fn chat_completions_single_candidate_returns_504_on_first_body_timeout() {
+        let upstream = Router::new().route(
+            "/v1/chat/completions",
+            post(|Json(_): Json<Value>| async move {
+                let delayed = stream::once(async move {
+                    tokio::time::sleep(Duration::from_millis(200)).await;
+                    Ok::<Bytes, std::io::Error>(Bytes::from_static(b"late"))
+                });
+                let mut resp = Response::new(Body::from_stream(delayed));
+                *resp.status_mut() = StatusCode::OK;
+                resp
+            }),
+        );
+        let (base_url, upstream_handle) = spawn_upstream(upstream).await;
+
+        let mut cfg = test_config(base_url);
+        cfg.upstream_first_body_byte_timeout = Duration::from_millis(50);
+        let state = AppState::new(cfg);
+        let app = app(state);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/v1/chat/completions")
+                    .header("content-type", "application/json")
+                    .body(Body::from(r#"{"model":"single-TEE"}"#))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::GATEWAY_TIMEOUT);
+        let bytes = resp.into_body().collect().await.unwrap().to_bytes();
+        let parsed: OpenAiErrorResponse = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(
+            parsed.error.code.as_deref(),
+            Some("upstream_first_body_byte_timeout")
+        );
 
         upstream_handle.abort();
     }
