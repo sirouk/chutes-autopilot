@@ -5388,6 +5388,16 @@ htmlcov/
 EOF
 }
 
+gitignore_has_entry() {
+    local gitignore_file="$1"
+    local entry="$2"
+    local escaped_entry
+
+    [ -f "$gitignore_file" ] || return 1
+    escaped_entry="$(printf '%s' "$entry" | sed -E 's/[][(){}.^$*+?|\\]/\\&/g')"
+    grep -qE "^[[:space:]]*${escaped_entry}[[:space:]]*$" "$gitignore_file"
+}
+
 gitignore_missing_required_entries() {
     local gitignore_file="$PROJECT_DIR/.gitignore"
     local entry
@@ -5400,7 +5410,7 @@ gitignore_missing_required_entries() {
     required_entries="$(gitignore_required_entries)"
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
-        if ! grep -qxF "$entry" "$gitignore_file"; then
+        if ! gitignore_has_entry "$gitignore_file" "$entry"; then
             echo "$entry"
         fi
     done <<< "$required_entries"
@@ -5418,7 +5428,7 @@ ensure_gitignore_guardrails() {
     local entry
     while IFS= read -r entry; do
         [ -n "$entry" ] || continue
-        if ! grep -qxF "$entry" "$gitignore_file" 2>/dev/null; then
+        if ! gitignore_has_entry "$gitignore_file" "$entry"; then
             echo "$entry" >> "$gitignore_file"
             added=true
         fi
@@ -5803,6 +5813,9 @@ write_gate_feedback() {
 
 check_build_prerequisites() {
     local -a missing=()
+    # Re-apply guardrails on every build-gate check so retries self-heal if
+    # prior phase edits removed required .gitignore entries.
+    ensure_gitignore_guardrails
     mapfile -t missing < <(collect_build_prerequisites_issues)
     if [ "${#missing[@]}" -gt 0 ]; then
         warn "Build prerequisites are incomplete:"

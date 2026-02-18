@@ -6,6 +6,9 @@
 # Ralphie runtime artifacts
 .ralphie/
 logs/
+!logs/
+logs/*
+!logs/baseline.md
 consensus/
 completion_log/
 *.log

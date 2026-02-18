@@ -1,29 +1,29 @@
 # Implementation Plan
 
 ## Goal
-Prepare chutes-autopilot for production launch with hardened routing, reproducible builds, secret hygiene, and verifiable behavior online and offline.
+Deliver a production-ready Chutes Autopilot router with hardened control-plane freshness, request safety, observability, container supply-chain hygiene, and secret handling so it can ship confidently at scale.
 
 ## Acceptance Criteria
-- `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` pass (or failures are captured with repro steps) and results are recorded in `logs/baseline.md`.
-- Secrets scan results (working tree + history) are documented in `logs/secrets.md`; `.gitignore` and `.env.example` cover generated logs/caches and contain no sensitive values.
-- Control-plane freshness (models allowlist and utilization) is observable and `/readyz` fails when either feed is stale or empty; tests cover fresh/stale/absent cases.
-- Property-based and regression tests cover model list parsing/dedup/enforcement, sticky key derivation, request size limits, and streaming failover boundaries (no retries after commit).
-- `make smoke` runs offline against a stub backend exercising alias, preference list, and direct model flows; CI hook is present and artifacts land under `logs/smoke/`.
-- Live Chutes integration behavior (auth, rate-limit, attestation/evidence) is captured in `research/COVERAGE_MATRIX.md` with stub fixtures so offline runs mirror it.
-- Docker image builds reproducibly, runs as non-root on a slim base, and docker-compose healthcheck targets `/readyz`; README documents image expectations and runtime user.
+- `cargo fmt --check`, `cargo clippy -- -D warnings`, and `cargo test` stay green; new coverage spans readiness, failover, and property cases; latest results are recorded in `logs/baseline.md`.
+- Secrets/hygiene scans (gitleaks + trufflehog) are documented in `logs/secrets.md`; `.gitignore` and `.env.example` cover new logs/cache artifacts without leaking credentials.
+- `/readyz` fails when candidate snapshot, model allowlist, or utilization data is missing or stale beyond configured thresholds; observability surfaces snapshot ages and candidate counts.
+- Streaming proxy honors no-retry-after-commit and handles connect/header/first-byte timeouts plus connection resets across alias, preference-list, and direct requests; proptest/fuzz covers model list parsing, stickiness, and request-size edges.
+- Offline smoke harness (`make smoke`) exercises alias, ordered list, and direct modes against a stub upstream; artifacts live under `logs/smoke/` and are ignored by git.
+- Live Chutes integration findings (auth, rate-limit, attestation evidence/TEE metadata) are captured in `research/COVERAGE_MATRIX.md` with matching offline fixtures and tests for parity.
+- Container build is reproducible, minimal, and non-root; docker-compose healthcheck targets `/readyz`; README documents image/user expectations and any runtime caps.
 
 ## Tasks (ordered by dependency and impact)
-- [ ] Baseline health: run fmt/clippy/test; if anything fails, log details in `logs/baseline.md` with reproduction notes; align `Makefile`/`README.md` so the default path passes locally.
-- [ ] Secrets + repo hygiene: run gitleaks/trufflehog on working tree and history; summarize in `logs/secrets.md`; expand `.gitignore`/`.env.example` for new logs/cache artifacts from tests or smoke runs.
-- [ ] Control-plane freshness guardrails: track allowlist and utilization refresh timestamps, gate `/readyz` when either is stale or empty, and add tests for fresh/stale/absent combinations.
-- [ ] Property-based safety: add `proptest` suites for comma-separated model lists (dedupe, max items), sticky key derivation (auth vs IP, proxy trust), and request size enforcement edge cases.
-- [ ] Streaming failover coverage: extend Axum test harness to cover connect timeout/connection reset and confirm no retries after headers or body bytes commit across alias, preference-list, and direct-model requests; assert debug header semantics.
-- [ ] Observability hardening: add structured tracing fields (request id, chosen model, snapshot age, failover reason) with sampling that avoids logging sensitive bodies/headers.
-- [ ] Offline smoke harness: add a stub upstream plus fixtures and a `make smoke` target (and CI entry) that exercises alias, explicit preference, and direct model flows without external network; store sample outputs under `logs/smoke/`.
-- [ ] Chutes integration validation: run against the live backend to document auth, rate-limit, and `/chutes/{id}/evidence` behavior; update `research/COVERAGE_MATRIX.md` and specs with observed deltas.
-- [ ] Parity fixtures for Chutes-dependent flows: record or script stub responses for auth errors, rate limits, and attestation so CI and offline runs mirror live findings without hitting Chutes.
-- [ ] Container + supply-chain hardening: refactor Dockerfile to cache deps, strip the binary, run as non-root on a minimal base (rustls CA pinned), update docker-compose healthcheck to `/readyz`, and document image size/user expectations in `README.md`.
+- [ ] Secrets & repo hygiene: run gitleaks + trufflehog (working tree + history); summarize in `logs/secrets.md`; extend `.gitignore`/`.env.example` for new logs/cache outputs.
+- [ ] Control-plane freshness gating: track allowlist/utilization timestamps and last-known-good; make `/readyz` fail on stale/empty datasets; add tests for fresh/stale/absent paths.
+- [ ] Observability: add structured tracing/metrics for request id, selected model, snapshot ages, candidate counts, and failover reason; ensure sensitive headers/bodies are never logged.
+- [ ] Property-based safety: add `proptest`/fuzz cases for model list parsing/dedup/limits, sticky key derivation (auth vs IP vs trusted proxy), and `MAX_REQUEST_BYTES` enforcement.
+- [ ] Streaming failover coverage: extend Axum harness to cover connect timeout, connection reset, and ensure no retries after body commit across alias/preference/direct paths; assert debug header semantics.
+- [ ] Offline smoke harness: build stub upstream + fixtures and a `make smoke` target (and CI hook) that exercises alias, preference list, and direct flows without external network; store outputs under `logs/smoke/`.
+- [ ] Chutes live integration check (provider-specific): run against real backend to record auth requirements, rate-limit behavior, and `/chutes/{id}/evidence`/TEE metadata; document in `research/COVERAGE_MATRIX.md` and specs if behavior diverges.
+- [ ] Parity fixtures for Chutes flows: capture/construct stub responses for auth errors, rate limits, and attestation evidence so tests and smoke runs mirror live findings without hitting Chutes.
+- [ ] Container & compose hardening: refactor Dockerfile for cached deps, stripped binary, non-root user on minimal base with pinned certs; update docker-compose healthcheck to `/readyz`; document image size/runtime user in README.
+- [ ] CI/runtime automation: add `make lint`/`make smoke` into a GitHub Actions workflow (or equivalent) to enforce fmt+clippy+tests+smoke on PRs; publish artifacts to `logs/` when failing.
 
 ## Completed
-- [x] Implemented ranked candidate refresh with model catalog allowlist and sticky selection, including failover rules for 503/timeouts/429 and OpenAI-compatible error responses.
-- [x] Established project scaffolding (Makefile targets, README usage, env defaults) and streaming passthrough with deterministic ranking and tie-breakers.
+- [x] Baseline fmt/clippy/test run recorded (2026-02-18) in `logs/baseline.md`.
+- [x] Core routing: candidate ranking from utilization + model allowlist, alias/direct/model-list modes, sticky rotation, streaming passthrough with pre-commit failover and OpenAI-shaped errors.
